@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 
-from gdrive import GoogleDriver
+from gdrive import get_drive_client
 from models import SearchResponse, FileFolderResponse, FilesFoldersListResponse,  Optional
 from models import FileNotFound
 
@@ -41,7 +41,6 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
-client = GoogleDriver()
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,6 +106,7 @@ async def media_streamer(request: Request, file_id: str):
     )
 
     try:
+        client = get_drive_client()
         file_info = await client.get_file_info(file_id)
     except Exception as error:
         raise FileNotFound(error)
@@ -156,6 +156,7 @@ async def file_info(
     file_id: str = Query(..., description="Google Drive file or folder ID")
 ):
     try:
+        client = get_drive_client()
         data = await client.get_file_info(file_id)
         return JSONResponse(
             {
@@ -180,6 +181,7 @@ async def folders_in_root(
     page_token: Optional[str] = Query(None, description="Pagination token for next page")
 ):
     try:
+        client = get_drive_client()
         data, info = (
             await client.list_all(page_token=page_token, page_size=page_size) if not folder_id 
             else await client.list_all(folder_id=folder_id, page_token=page_token, page_size=page_size)
@@ -208,6 +210,7 @@ async def search(
     page_token: Optional[str] = Query(None, description="Pagination token for next page")
 ):
     try:
+        client = get_drive_client()
         data, info = await client.search_files_in_drive(query, page_token=page_token, page_size=page_size)
         return JSONResponse(
             {

@@ -20,6 +20,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
+from libs.time_cache import timed_cache
+
 from .utils import (
     hbs,
     run_async,
@@ -390,3 +392,9 @@ class GoogleDriver:
         
         await _list_()
         return all_items, info
+
+
+# to get new driver instance in every 10mins
+@timed_cache(seconds=600)
+def get_drive_client() -> GoogleDriver:
+    return GoogleDriver()
