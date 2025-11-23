@@ -1,1 +1,1 @@
-web: gunicorn main:app -k uvicorn.workers.UvicornWorker --workers $(($(nproc) * 2)) --host=0.0.0.0 --port=${PORT:-5000} --max-requests ${MAX_REQ_BUFFER:-1000} --max-requests-jitter $(( ${MAX_REQ_BUFFER:-1000} / 10 )) --preload
+web: gunicorn main:app -k uvicorn.workers.UvicornWorker --workers $(($(nproc) * 2)) --host=0.0.0.0 --port=${PORT:-5000} --preload

@@ -9,6 +9,6 @@ fi
 gunicorn main:app -k uvicorn.workers.UvicornWorker \
     --bind ${HOST:-0.0.0.0}:${PORT:-5000} \
     --preload \
-    --max-requests ${MAX_REQ_BUFFER:-1000} \
-    --max-requests-jitter $(( ${MAX_REQ_BUFFER:-1000} / 10 )) \
+    # --max-requests ${MAX_REQ_BUFFER:-1000} \
+    # --max-requests-jitter $(( ${MAX_REQ_BUFFER:-1000} / 10 )) \
     --workers $(( $(nproc) * 2 + 1 ))
