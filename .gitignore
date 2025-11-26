@@ -4,3 +4,4 @@ test.*
 *.pickle
 *.log
 accounts/
+test/

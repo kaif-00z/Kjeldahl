@@ -170,7 +170,7 @@ class GoogleDriver:
             LOGGER.error(f"Error getting file info: {str(err)}")
             raise err
 
-    @timed_cache(seconds=120) # 2 mins
+    @timed_cache(seconds=300) # 5 mins
     async def list_all(self, folder_id: str = Var.ROOT_FOLDER_ID, page_token: str = None, page_size: int = 100):
         all_items = []
         info = {
@@ -186,18 +186,6 @@ class GoogleDriver:
 
         async def _process_single_file(file: dict):
             try:
-                shortcut = file.get("shortcutDetails")
-                if shortcut:
-                    target_id = shortcut.get("targetId")
-                    try:
-                        file = await self.__getFileMetadata(target_id)
-                    except HttpError as err:
-                        if err.resp.status == 404:
-                            LOGGER.warning(f"Shortcut target not found: {target_id}")
-                            return
-                        else:
-                            raise
-                
                 name = file.get("name")
                 mime_type = file.get("mimeType")
                 size = int(file.get("size", 0))
@@ -261,12 +249,12 @@ class GoogleDriver:
                 return self.__service.files().list(
                     supportsAllDrives=True,
                     includeItemsFromAllDrives=True,
-                    q=f"'{folder_id}' in parents and trashed = false",
+                    q=f"'{folder_id}' in parents AND trashed = false AND mimeType != 'application/vnd.google-apps.shortcut' ",
                     spaces="drive",
                     pageSize=page_size,
                     fields=(
                         "nextPageToken, "
-                        "files(id, name, mimeType, size, shortcutDetails)"
+                        "files(id, name, mimeType, size)"
                     ),
                     orderBy="folder, name",
                     pageToken=page_token,
@@ -330,18 +318,6 @@ class GoogleDriver:
 
         async def _process_single_file(file: dict):
             try:
-                shortcut = file.get("shortcutDetails")
-                if shortcut:
-                    target_id = shortcut.get("targetId")
-                    try:
-                        file = await self.__getFileMetadata(target_id)
-                    except HttpError as err:
-                        if err.resp.status == 404:
-                            LOGGER.warning(f"Shortcut target not found: {target_id}")
-                            return
-                        else:
-                            raise
-                
                 name = file.get("name")
                 mime_type = file.get("mimeType")
                 size = int(file.get("size", 0))
