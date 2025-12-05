@@ -34,6 +34,7 @@ from .utils import asyncio, run_async
 
 LOGGER = getLogger(__name__)
 
+
 class AsyncGoogleDriver:
     def __init__(self):
         self._requests_sessions = aiohttp.ClientSession()
@@ -91,14 +92,15 @@ class AsyncGoogleDriver:
                 "grant_type": "refresh_token",
             }
             return self.__credntials
-        
 
     async def _lazy_load_sa(self, file_path: str) -> dict:
         if data := self.__service_accounts_data.get(file_path):
             return
         async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
             data = json.loads(await f.read())
-            self.__service_accounts_data[file_path] = base64.b64encode(json.dumps(data).encode()).decode()
+            self.__service_accounts_data[file_path] = base64.b64encode(
+                json.dumps(data).encode()
+            ).decode()
             return
 
     @run_async
@@ -118,7 +120,9 @@ class AsyncGoogleDriver:
     # actually both sa's access token and pickle's refresh token expire after 1hr or 3600s
     # so caching it for 58mins :)
     @timed_cache(seconds=3500)
-    async def _fetch_token(self, credentials: str = None, is_service_account: bool = False):
+    async def _fetch_token(
+        self, credentials: str = None, is_service_account: bool = False
+    ):
 
         if is_service_account and credentials:
             credentials = json.loads(base64.b64decode(credentials).decode())
@@ -143,7 +147,7 @@ class AsyncGoogleDriver:
         raise FailedToFetchToken("Failed to fetch access token")
 
     async def _get_token(self, retry: int = 0):
-        if self.__credntials :
+        if self.__credntials:
             return await self._fetch_token()
 
         if Var.IS_SERVICE_ACCOUNT and self.__service_accounts_data:

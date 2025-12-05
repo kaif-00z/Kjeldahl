@@ -18,6 +18,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from gdrive import AsyncGoogleDriver
+from libs.tracker.downloads import DownloadTracker
 from models import (
     FileFolderResponse,
     FilesFoldersListResponse,
@@ -37,6 +38,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 global driver
+dlt = DownloadTracker()
 
 
 @asynccontextmanager
@@ -51,7 +53,7 @@ async def lifespan(app):
 app = FastAPI(
     title="Google Drive Mirror",
     summary="High Speed Gdrive Mirror, Indexer & File Streamer Written Asynchronous in Python with FastAPI With Awsome Features & Stablility.",
-    version="v0.0.1@beta.2ps",
+    version="v0.0.1@beta.3ps",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -83,6 +85,7 @@ async def stream_handler(request: Request, file_id: str) -> StreamingResponse:
         )
 
     client_ip = request.client.host
+    dlt.track_download(file_id, user_ip=client_ip)
     log.info(f"Stream request for file {file_id} from IP {client_ip}")
 
     try:
