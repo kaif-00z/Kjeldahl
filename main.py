@@ -51,7 +51,7 @@ async def lifespan(app):
     await driver._load_accounts()
     await dlt.init_db()
     yield
-    await driver._close_req_session()
+    await driver._requests_sessions.close()
 
 
 app = FastAPI(

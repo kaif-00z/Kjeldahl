@@ -172,7 +172,7 @@ class AsyncGoogleDriver:
     async def stream_file(
         self, file_id: str, file: dict, range_header: int = 0
     ) -> StreamingResponse:
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&acknowledgeAbuse=true"
 
         file_name = file["name"]
         file_size = int(file.get("size", 0))
@@ -191,8 +191,11 @@ class AsyncGoogleDriver:
         session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
         for i in range(3):
             try:
+                # start = time.time()
+                # print(f"pre init debug {start}")
                 res = await session.get(url, headers=headers)
                 if res.status in (200, 206):
+                    # print(f"post init track debug {(time.time() - start):.6f}s")
                     break
             except Exception as err:
                 LOGGER.error(str(err))
@@ -357,6 +360,3 @@ class AsyncGoogleDriver:
                 return res
 
         raise FailedToFetchSearchResult(details=res)
-
-    async def _close_req_session(self):
-        await self._requests_sessions.close()
