@@ -57,7 +57,7 @@ async def lifespan(app):
 app = FastAPI(
     title="Google Drive Mirror",
     summary="High Speed Gdrive Mirror, Indexer & File Streamer Written Asynchronous in Python with FastAPI With Awsome Features & Stablility.",
-    version="v0.0.1@beta.3ps",
+    version="v0.0.1@beta.1s",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
