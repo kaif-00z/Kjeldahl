@@ -1,6 +1,12 @@
 __pycache__/
+accounts/
+test/
 .env
 test.*
+old.*
+cli.*
 *.pickle
 *.log
-accounts/
+*.db
+*.pdf
+*.txt

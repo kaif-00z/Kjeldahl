@@ -9,51 +9,77 @@
 # credit to t.me/kAiF_00z (github.com/kaif-00z)
 
 
+from typing import List, Optional, Union
+
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
 
 # Base
+
 
 class BaseFileFolder(BaseModel):
     id: str = Field(..., description="Unique identifier")
     name: str = Field(..., min_length=1, description="Display name")
-    mime_type: str = Field(..., description="MIME type")
-    size: str = Field(..., description="Human readable size")
-    type: Literal["file", "folder"] = Field(..., description="Item type")
-    parent_folder_id: Optional[str] = Field(None, description="Parent folder ID")
+    mimeType: str = Field(..., description="Mime type")
+    createdTime: str = Field(..., description="Creation time")
+    modifiedTime: str = Field(..., description="Last modification time")
+    size: Optional[str] = Field(None, description="Size in bytes")
+    thumbnailLink: Optional[str] = Field(None, description="Thumbnail URL")
+    fileExtension: Optional[str] = Field(None, description="File extension")
 
-class FileFoldersListData(BaseFileFolder):
+
+class BaseModem(BaseModel):
+    files: List[BaseFileFolder]
+    nextPageToken: Optional[str] = Field(
+        None, description="Token for fetching the next page of results"
+    )
+
+
+class FileFoldersListData(BaseModem):
     pass
 
-class FileFolderData(BaseFileFolder):
+
+class SearchData(BaseModem):
     pass
 
-class SearchData(BaseFileFolder):
-    pass
 
-class FileFoldersListInfo(BaseModel):
-    total_files: int = Field(..., ge=0, description="Total number of files")
-    total_folders: int = Field(..., ge=0, description="Total number of folders")
-    total_files_size: int = Field(..., ge=0, description="Total size in bytes")
-    page_token: Optional[str] = Field(None, description="Pagination token")
+# Trending & Hotness Score Models
+
+
+class FileStats(BaseModel):
+    fileId: str = Field(..., description="Unique identifier of the file")
+    downloadCount: Optional[int] = Field(0, description="Total number of downloads")
+    firstDownload: Optional[str] = Field(
+        None, description="Timestamp of the first download"
+    )
+    lastDownload: Optional[str] = Field(
+        None, description="Timestamp of the last download"
+    )
+    trendingScore: float = Field(..., description="Calculated trending score")
+    hotnessScore: float = Field(..., description="Calculated hotness score")
+
 
 # Response models
+
 
 class BaseResponse(BaseModel):
     success: bool = Field(..., description="Operation status")
 
+
 class FilesFoldersListResponse(BaseResponse):
-    data: List[FileFoldersListData]
-    additional_info: FileFoldersListInfo
+    data: FileFoldersListData
+
 
 class FileFolderResponse(BaseResponse):
-    data: FileFolderData
+    data: BaseFileFolder
+
 
 class SearchResponse(BaseResponse):
-    data: List[SearchData]
-    additional_info: FileFoldersListInfo
+    data: SearchData
 
-# Error
 
-class FileNotFound(Exception):
-    pass
+class FilesStatsResponse(BaseResponse):
+    data: List[FileStats]
+
+
+class FileStatsResponse(BaseResponse):
+    data: FileStats

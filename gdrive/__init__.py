@@ -5,388 +5,371 @@
 # PLease read the GNU Affero General Public License in
 # <https://github.com/kaif-00z/Google-Drive-Mirror/blob/main/LICENSE>.
 
-# inspired from WZML-X, mltb and google-drive-index
-# https://github.com/SilentDemonSD/WZML-X/blob/master/bot/helper/mirror_utils/upload_utils/gdriveTools.py under GPLv3 license
-# only base (like login & sa management)
-# everything else written by me@kaif-00z under AGPLv3 license
+# inspired from https://gitlab.com/GoogleDriveIndex/Google-Drive-Index (serverless JS)
 
-from logging import getLogger, ERROR
-from pickle import load as pload
-from os import path as ospath, listdir
-from io import BytesIO
-from random import randrange
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+# if you are using this following code then don't forgot to give proper
+# credit to t.me/kAiF_00z (github.com/kaif-00z)
 
-from .utils import (
-    hbs,
-    run_async,
-    asyncio
-)
+import base64
+import json
+import mimetypes
+import os
+import pickle
+import random
+import time
+import re
+from glob import glob
+from logging import WARNING, getLogger
+
+import aiofiles
+import aiohttp
+import jwt
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+
+from libs.time_cache import timed_cache
+
 from .config import Var
+from .errors import *
+from .utils import asyncio, run_async
 
 LOGGER = getLogger(__name__)
-getLogger("googleapiclient.discovery").setLevel(ERROR)
 
 
-class GoogleDriver:
+class AsyncGoogleDriver:
     def __init__(self):
-        self.__OAUTH_SCOPE = ["https://www.googleapis.com/auth/drive"]
-        self.__G_DRIVE_DIR_MIME_TYPE = "application/vnd.google-apps.folder"
-        self.__sa_index = 0
-        self.__sa_count = 1
-        self.__sa_number = 100
-        self.__service = self.__authorize()
+        self._requests_sessions = aiohttp.ClientSession()
 
-    def __authorize(self):
-        credentials = None
+        # for service accounts
+        self.__service_accounts_data = {}
+        self.__service_accounts_identifiers = []
+        # for normal account
+        self.__credntials = None
+
+    async def _async_searcher(
+        self,
+        url: str,
+        post: bool = None,
+        headers: dict = None,
+        params: dict = None,
+        json: dict = None,
+        data: dict = None,
+        ssl=None,
+        *args,
+        **kwargs,
+    ) -> dict:
+        if post:
+            data = await self._requests_sessions.post(
+                url, headers=headers, json=json, data=data, ssl=ssl, *args, **kwargs
+            )
+        else:
+            data = await self._requests_sessions.get(
+                url, headers=headers, params=params, ssl=ssl, *args, **kwargs
+            )
+
+        try:
+            return await data.json()
+        except BaseException as err:
+            return {
+                "error": "unable_to_fetch_data",
+                "error_description": "Unable to get json data",
+                "error_details": str(err),
+            }
+
+    async def _load_accounts(self) -> None:
         if Var.IS_SERVICE_ACCOUNT:
-            json_files = listdir("accounts")
-            self.__sa_number = len(json_files)
-            self.__sa_index = randrange(self.__sa_number)
-            LOGGER.info(
-                f"Authorizing with {json_files[self.__sa_index]} service account"
-            )
-            credentials = service_account.Credentials.from_service_account_file(
-                f"accounts/{json_files[self.__sa_index]}", scopes=self.__OAUTH_SCOPE
-            )
-        elif ospath.exists("token.pickle"):
-            LOGGER.info("Authorize with token.pickle")
-            with open("token.pickle", "rb") as f:
-                credentials = pload(f)
-        else:
-            LOGGER.error("token.pickle not found nor service accounts if any!")
-        return build("drive", "v3", credentials=credentials, cache_discovery=False)
+            procs = [self._lazy_load_sa(sa) for sa in glob("accounts/*.json")]
+            await asyncio.gather(*procs)
+        elif os.path.exists("token.pickle"):
+            await self._lazy_load_pickle()
 
+    async def _lazy_load_pickle(self) -> None:
+        async with aiofiles.open("token.pickle", "rb") as t:
+            data = pickle.loads(await t.read())
+            self.__credntials = {
+                "client_id": data.client_id,
+                "client_secret": data.client_secret,
+                "refresh_token": data.refresh_token,
+                "grant_type": "refresh_token",
+            }
+            return self.__credntials
 
-    @run_async
-    def __switchServiceAccount(self):
-        if self.__sa_index == self.__sa_number - 1:
-            self.__sa_index = 0
-        else:
-            self.__sa_index += 1
-        self.__sa_count += 1
-        LOGGER.info(f"Switching to {self.__sa_index} index")
-        self.__service = self.__authorize()
+    async def _lazy_load_sa(self, file_path: str) -> dict:
+        if data := self.__service_accounts_data.get(file_path):
+            return
+        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+            data = json.loads(await f.read())
+            self.__service_accounts_data[file_path] = base64.b64encode(
+                json.dumps(data).encode()
+            ).decode()
+            return
 
     @run_async
-    def __getFileMetadata(self, file_id):
-        return (
-            self.__service.files()
-            .get(
-                fileId=file_id,
-                supportsAllDrives=True,
-                fields="name, id, mimeType, size",
+    def _generate_gcp_jwt(self, sa_json) -> str:
+        now = int(time.time())
+        private_key = sa_json["private_key"]
+        client_email = sa_json["client_email"]
+        payload = {
+            "iss": client_email,
+            "scope": "https://www.googleapis.com/auth/drive",
+            "aud": "https://www.googleapis.com/oauth2/v4/token",
+            "exp": now + 3600,
+            "iat": now,
+        }
+        return jwt.encode(payload, private_key, algorithm="RS256")
+
+    # actually both sa's access token and pickle's refresh token expire after 1hr or 3600s
+    # so caching it for 58mins :)
+    @timed_cache(seconds=3500)
+    async def _fetch_token(
+        self, credentials: str = None, is_service_account: bool = False
+    ) -> str:
+
+        if is_service_account and credentials:
+            credentials = json.loads(base64.b64decode(credentials).decode())
+            _jwt_payload = await self._generate_gcp_jwt(credentials)
+            payload = {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": _jwt_payload,
+            }
+        else:
+            payload = await self._lazy_load_pickle()
+
+        for i in range(3):
+            res = await self._async_searcher(
+                url="https://www.googleapis.com/oauth2/v4/token",
+                post=True,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data=payload,
             )
-            .execute()
+            if at := (res or {}).get("access_token"):
+                return at
+
+        raise FailedToFetchToken(details=res)
+
+    async def _get_token(self, retry: int = 0) -> str:
+        if self.__credntials:
+            return await self._fetch_token()
+
+        if Var.IS_SERVICE_ACCOUNT and self.__service_accounts_data:
+            if not self.__service_accounts_identifiers:
+                self.__service_accounts_identifiers = list(
+                    self.__service_accounts_data.keys()
+                )
+            sad = self.__service_accounts_data[
+                random.choice(self.__service_accounts_identifiers)
+            ]
+            try:
+                return await self._fetch_token(sad, is_service_account=True)
+            except FailedToFetchToken as err:
+                if retry >= 5:
+                    raise err
+                return await self._get_token(retry + 1)
+
+        raise RuntimeError(
+            "Neither a service account nor a token.pickle file is available. Please configure authentication first!"
         )
 
     async def stream_file(
-        self,
-        file_id,
-        chunk_size=Var.SERVER_SIDE_SPEED * 1024 * 1024,
-    ):
-        
-        file_id = file_id.strip()
+        self, file_id: str, file: dict, range_header: int = 0
+    ) -> StreamingResponse:
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&acknowledgeAbuse=true"
 
-        @run_async
-        def _create_request():
-            return self.__service.files().get_media(
-                fileId=file_id,
-                supportsAllDrives=True
-            )
-        
-        @run_async
-        def _get_next_chunk(ddl):
-            return ddl.next_chunk()
-        
-        request = await _create_request()
-        buffer = BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request, chunksize=chunk_size)
-        
-        done = False
-        retries = 0
+        file_name = file["name"]
+        file_size = int(file.get("size", 0))
+        mime_type = (
+            file.get("mimeType")
+            or mimetypes.guess_type(file["name"])[0]
+            or "application/octet-stream"
+        )
 
-        while not done:
+        headers = {}
+
+        if range_header:
+            headers["Range"] = str(range_header)
+
+        res = None
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
+        for i in range(3): # will use recursion in future rather than this ugly for loop
             try:
-                
-                status, done = await _get_next_chunk(downloader)
-                
-                buffer.seek(0)
-
-                chunk_data = buffer.read()
-                yield chunk_data
-
-                buffer.seek(0)
-                buffer.truncate()
-                retries = 0
-
-            except HttpError as err:
-                if err.resp.status in [500, 502, 503, 504] and retries < 10:
-                    retries += 1
-                    await asyncio.sleep(2)
-                    continue
-                
-                if err.resp.get("content-type", "").startswith("application/json"):
-                    try:
-                        error_data = eval(err.content)
-                        reason = error_data.get("error", {}).get("errors", [{}])[0].get("reason")
-                        if reason in ["downloadQuotaExceeded", "dailyLimitExceeded"]:
-                            if self.__sa_count < self.__sa_number:
-                                LOGGER.info(f"Got {reason}, switching service account...")
-                                await self.__switchServiceAccount()
-                                # restart the entire stream?
-                                async for chunk in self.stream_file(file_id):
-                                    yield chunk
-                            else:
-                                raise Exception(f"All service accounts quota exceeded: {reason}")
-                    except Exception as er:
-                        raise er
-                else: raise err
-            
+                headers["Authorization"] = f"Bearer {await self._get_token()}"
+                res = await session.get(url, headers=headers)
+                if res.status in (200, 206):
+                    break
             except Exception as err:
-                LOGGER.error(f"Streaming error: {str(err)}")
-                raise err
+                LOGGER.error(str(err))
 
+            if i >= 2:
+                if res is None:
+                    raise HTTPException(500, "Unknown error while contacting Google Drive")
 
+                if res.status == 404:
+                    raise HTTPException(404, "File Not Found")
+                
+                if res.status == 401:
+                    raise HTTPException(401, "Token is expired!! Please check your authentications.")
+                
+                if res.status == 429:
+                    raise HTTPException(429, "Rate limit exceeded! use service accounts or add more to avoid this.")
+
+                details = await res.text()
+
+                if res.status == 403:
+                    raise HTTPException(403, details)
+
+                if res.status not in (200, 206):
+                    raise HTTPException(res.status, details)
+
+        async def stream():
+            try:
+                async for chunk in res.content.iter_chunked(1024 * 1024):
+                    if chunk:
+                        yield chunk
+            except BaseException as e:
+                if isinstance(e, asyncio.CancelledError):
+                    LOGGER.warning(
+                        f"Client disconnected while streaming file {file_id}"
+                    )
+                else:
+                    LOGGER.error(f"Stream error: {e}")
+                raise
+            finally:
+                await session.close()
+
+        response = StreamingResponse(content=stream(), media_type=mime_type)
+
+        response.headers["Content-Disposition"] = f'attachment; filename="{file_name}"'
+
+        if not range_header and file_size:
+            response.headers["Content-Length"] = str(file_size)
+
+        if res.status == 206:
+            response.status_code = 206
+            for h in ["Content-Range", "Accept-Ranges"]:
+                if h in res.headers:
+                    response.headers[h] = res.headers[h]
+        else:
+            response.status_code = 200
+
+        return response
+
+    @timed_cache(seconds=3600)  # 1hr is good for this as well
     async def get_file_info(self, file_id) -> dict:
-        try:
-            file_id = file_id.strip()
-            
-            meta = await self.__getFileMetadata(file_id)
 
-            return {
-                "name": meta["name"],
-                "id": meta["id"],
-                "mime_type": meta.get("mimeType"),
-                "size": int(meta.get("size", 0)),
-                "type": "folder" if meta.get("mimeType") == self.__G_DRIVE_DIR_MIME_TYPE else "file"
-            }
-        except Exception as err:
-            LOGGER.error(f"Error getting file info: {str(err)}")
-            raise err
-
-    async def list_all(self, folder_id: str = Var.ROOT_FOLDER_ID, page_token: str = None, page_size: int = 100):
-        all_items = []
-        info = {
-            "total_files": 0,
-            "total_folders": 0,
-            "total_files_size": 0,
-            "page_token": None
+        params = {
+            "supportsAllDrives": "true",
+            "fields": "id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,fileExtension",
         }
 
-        async def _process_file_batch(files: list):
-            tasks = [_process_single_file(file) for file in files]
-            await asyncio.gather(*tasks)
-
-        async def _process_single_file(file: dict):
-            try:
-                shortcut = file.get("shortcutDetails")
-                if shortcut:
-                    target_id = shortcut.get("targetId")
-                    try:
-                        file = await self.__getFileMetadata(target_id)
-                    except HttpError as err:
-                        if err.resp.status == 404:
-                            LOGGER.warning(f"Shortcut target not found: {target_id}")
-                            return
-                        else:
-                            raise
-                
-                name = file.get("name")
-                mime_type = file.get("mimeType")
-                size = int(file.get("size", 0))
-                file_id = file.get("id")
-                
-                item_type = (
-                    "folder"
-                    if mime_type == self.__G_DRIVE_DIR_MIME_TYPE
-                    else "file"
-                )
-
-                item_data = {
-                    "id": file_id,
-                    "name": name,
-                    "mime_type": mime_type,
-                    "size": hbs(size),
-                    "parent_folder_id": folder_id,
-                    "type": item_type,
-                }
-
-                if item_type == "folder":
-                    info["total_folders"] += 1
-                else:
-                    info["total_files"] += 1
-                    info["total_files_size"] += size
-
-                all_items.append(item_data)
-            except Exception as e:
-                LOGGER.error(f"Error processing file {file.get('id')}: {e}")
-                raise e
-
-        async def _list_folder():
-            try:
-                response = await _execute_files_list()
-                
-                files = response.get("files", [])
-                if not files:
-                    return
-                
-                # Process files in parallel batches
-                batch_size = 50
-                for i in range(0, len(files), batch_size):
-                    batch = files[i:i + batch_size]
-                    await _process_file_batch(batch)    
-
-                info["page_token"] = response.get("nextPageToken")
-                
-            except HttpError as err:
-                if err.resp.status == 404:
-                    LOGGER.warning(f"Folder not found: {folder_id}")
-                else:
-                    LOGGER.error(f"HTTP Error {err.resp.status}: {err}")
-                raise err
-            except Exception as e:
-                LOGGER.error(f"Error listing folder {folder_id}: {e}")
-                raise e
-
-        @run_async
-        def _execute_files_list():
-            try:
-                return self.__service.files().list(
-                    supportsAllDrives=True,
-                    includeItemsFromAllDrives=True,
-                    q=f"'{folder_id}' in parents and trashed = false",
-                    spaces="drive",
-                    pageSize=page_size,
-                    fields=(
-                        "nextPageToken, "
-                        "files(id, name, mimeType, size, shortcutDetails)"
-                    ),
-                    orderBy="folder, name",
-                    pageToken=page_token,
-                ).execute()
-            except Exception as err:
-                raise err
-
-        await _list_folder()
-        return all_items, info
-
-    async def search_files_in_drive(self, query: str, page_token=None, page_size=100):
-        all_items = []
-        info = {
-            "total_files": 0,
-            "total_folders": 0,
-            "total_files_size": 0,
-            "page_token": None
+        headers = {
+            "Authorization": f"Bearer {await self._get_token()}",
+            "Accept": "application/json",
         }
-        query = query.strip().replace("'", "\\'")
 
-        @run_async
-        def _execute_search():
-            if not query:
-                return all_items, info
+        for i in range(3):
+            res = await self._async_searcher(
+                url=f"https://www.googleapis.com/drive/v3/files/{file_id}/",
+                headers=headers,
+                params=params,
+            )
 
-            words = query.split()
-            name_cond = " AND ".join([f"name contains '{w}'" for w in words])
+            if (res or {}).get("id"):
+                return res
 
-            params = {
-                "q": (
-                    "trashed = false "
-                    "AND mimeType != 'application/vnd.google-apps.shortcut' "
-                    "AND mimeType != 'application/vnd.google-apps.document' "
-                    "AND mimeType != 'application/vnd.google-apps.spreadsheet' "
-                    "AND mimeType != 'application/vnd.google-apps.form' "
-                    "AND mimeType != 'application/vnd.google-apps.site' "
-                    "AND name != '.password' "
-                    f"AND ({name_cond})"
-                ),
-                "fields": "nextPageToken, files(id, driveId, name, mimeType, size, modifiedTime)",
-                "pageSize": page_size,
-                "orderBy": "folder, name, modifiedTime desc",
-                "supportsAllDrives": True,
-                "includeItemsFromAllDrives": True
-            }
+        raise FailedToFetchFileInfo(details=res)
 
-            params["corpora"] = "allDrives"
+    @timed_cache(seconds=300)  # 5 mins
+    async def list_all(
+        self,
+        folder_id: str = Var.ROOT_FOLDER_ID,
+        page_token: str = None,
+        page_size: int = 50,
+    ) -> dict:
 
-            if page_token:
-                params["pageToken"] = page_token
+        params = {
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "q": (
+                f"'{folder_id}' in parents AND trashed = false "
+                "AND mimeType != 'application/vnd.google-apps.shortcut'"
+            ),
+            "spaces": "drive",
+            "pageSize": page_size,
+            "fields": "nextPageToken, files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,fileExtension)",
+            "orderBy": "folder, name",
+        }
 
-            try:
-                return self.__service.files().list(**params).execute()
-            except Exception as err:
-                raise err
-        
-        async def _process_file_batch(files: list):
-            tasks = [_process_single_file(file) for file in files]
-            await asyncio.gather(*tasks)
+        if page_token:
+            params["pageToken"] = page_token
 
-        async def _process_single_file(file: dict):
-            try:
-                shortcut = file.get("shortcutDetails")
-                if shortcut:
-                    target_id = shortcut.get("targetId")
-                    try:
-                        file = await self.__getFileMetadata(target_id)
-                    except HttpError as err:
-                        if err.resp.status == 404:
-                            LOGGER.warning(f"Shortcut target not found: {target_id}")
-                            return
-                        else:
-                            raise
-                
-                name = file.get("name")
-                mime_type = file.get("mimeType")
-                size = int(file.get("size", 0))
-                file_id = file.get("id")
+        headers = {
+            "Authorization": f"Bearer {await self._get_token()}",
+            "Accept": "application/json",
+        }
 
-                item_type = (
-                    "folder"
-                    if mime_type == self.__G_DRIVE_DIR_MIME_TYPE
-                    else "file"
-                )
+        for i in range(3):
+            res = await self._async_searcher(
+                url=f"https://www.googleapis.com/drive/v3/files/",
+                headers=headers,
+                params=params,
+            )
 
-                all_items.append({
-                    "id": file_id,
-                    "name": name,
-                    "mime_type": mime_type,
-                    "size": hbs(size),
-                    "type": item_type,
-                })
+            if "files" in (res or {}):
+                return res
 
-                if item_type == "folder":
-                    info["total_folders"] += 1
-                else:
-                    info["total_files"] += 1
-                    info["total_files_size"] += size
-            except Exception as e:
-                LOGGER.error(f"Error processing file {file.get('id')}: {e}")
-                raise e
+        raise FailedToFetchFilesTree(details=res)
 
-        async def _list_():
-            try:
-                response = await _execute_search()
-                
-                files = response.get("files", [])
-                if not files:
-                    return
-                
-                # Process files in parallel batches
-                batch_size = 50
-                for i in range(0, len(files), batch_size):
-                    batch = files[i:i + batch_size]
-                    await _process_file_batch(batch)    
+    @staticmethod
+    def _format_search_keyword(keyword):
+        if not keyword:
+            return ""
+        result = re.sub(r'(!=)|[\'"=<>/\\\\:]', '', keyword)
+        result = re.sub(r'[,，|(){}]', ' ', result)
+        return result.strip()
 
-                info["page_token"] = response.get("nextPageToken")
-            except HttpError as err:
-                LOGGER.error(f"HTTP Error {err.resp.status}: {err}")
-                raise err
-            except Exception as e:
-                LOGGER.error(f"Error while searching: {e}")
-                raise e
-        
-        await _list_()
-        return all_items, info
+    @timed_cache(seconds=300)  # 5mins
+    async def search_files_in_drive(
+        self, query: str, page_token=None, page_size=50
+    ) -> dict:
+        query = self._format_search_keyword(query)
+        words = query.split()
+        name_cond = " AND ".join([f"name contains '{w}'" for w in words])
+
+        params = {
+            "q": (
+                "trashed = false "
+                "AND mimeType != 'application/vnd.google-apps.shortcut' "
+                "AND mimeType != 'application/vnd.google-apps.document' "
+                "AND mimeType != 'application/vnd.google-apps.spreadsheet' "
+                "AND mimeType != 'application/vnd.google-apps.form' "
+                "AND mimeType != 'application/vnd.google-apps.site' "
+                "AND name != '.password' "
+                f"AND ({name_cond})"
+            ),
+            "fields": "nextPageToken, files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,fileExtension)",
+            "pageSize": page_size,
+            "orderBy": "folder, name, modifiedTime desc",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "corpora": "allDrives",
+        }
+
+        headers = {
+            "Authorization": f"Bearer {await self._get_token()}",
+            "Accept": "application/json",
+        }
+
+        if page_token:
+            params["pageToken"] = page_token
+
+        for i in range(3):
+            res = await self._async_searcher(
+                url=f"https://www.googleapis.com/drive/v3/files/",
+                headers=headers,
+                params=params,
+            )
+
+            if "files" in (res or {}):
+                return res
+
+        raise FailedToFetchSearchResult(details=res)
