@@ -8,7 +8,7 @@
 
 from decouple import config
 
+
 class Var:
     IS_SERVICE_ACCOUNT = config("IS_SERVICE_ACCOUNT", default=False, cast=bool)
-    SERVER_SIDE_SPEED = config("SERVER_SIDE_SPEED", default=25, cast=int) # in mega bytes
     ROOT_FOLDER_ID = config("ROOT_FOLDER_ID")

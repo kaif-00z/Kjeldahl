@@ -171,8 +171,6 @@ python3 add_to_team_drive.py -d SharedTeamDriveSrcID
 
 ### OPTIONAL VARIABLES
 
-- `SERVER_SIDE_SPEED` - (1-100) MBs to manage server side chuncks yeild of streaming (default 25 MBps)`.
-
 - `IS_SERVICE_ACCOUNT` - `True/False` If you want to use mutiple service account, make sure u add all service accounts inside `accounts/` folder.
 
 - `HOST` - Configure if you want to run on specified host (default 0.0.0.0).
@@ -185,8 +183,7 @@ Google-Drive-Mirror is licensed under [GNU Affero General Public License](https:
 
 # Credits
 * [Me](https://github.com/kaif-00z)
-* [MLTB Devs](https://github.com/anasty17/mirror-leech-telegram-bot)
-* [WZML-X Devs](https://github.com/SilentDemonSD/WZML-X)
+* [MLTB Devs For Side Snippets](https://github.com/anasty17/mirror-leech-telegram-bot)
 
 ## Donate
 

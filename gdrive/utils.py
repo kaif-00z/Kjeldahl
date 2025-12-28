@@ -10,6 +10,7 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial, wraps
 
+
 def hbs(size):
     if not size:
         return "0 B"
@@ -20,6 +21,7 @@ def hbs(size):
         size /= power
         raised_to_pow += 1
     return str(round(size, 2)) + " " + dict_power_n[raised_to_pow] + "B"
+
 
 # thanks to github.com/TeamUltroid/pyUltroid for the below function under AGPLv3 license
 def run_async(function):
