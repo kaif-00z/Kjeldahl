@@ -118,7 +118,7 @@ async def stream_handler(request: Request, file_id: str) -> StreamingResponse:
 
 @app.get("/info", response_model=FileFolderResponse)
 async def file_info(
-    file_id: str = Query(..., description="Google Drive file or folder ID")
+    file_id: str = Query(..., description="Google Drive file or folder ID"),
 ):
     try:
         data = await driver.get_file_info(file_id)
